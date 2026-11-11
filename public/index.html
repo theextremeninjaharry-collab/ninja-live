@@ -1,0 +1,346 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ninja Live</title>
+<script src="/socket.io/socket.io.js"></script>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#090d16;color:white;font-family:Arial,sans-serif}
+header{padding:18px;background:#151d2c;border-bottom:2px solid #303d52}
+h1{margin:0;color:#ff4545;letter-spacing:2px}
+main{max-width:1100px;margin:20px auto;padding:12px}
+.panel{background:#151d2c;border:1px solid #303d52;border-radius:12px;padding:18px;margin-bottom:16px}
+button,input{padding:12px;border-radius:8px;border:1px solid #39475d;font-size:16px}
+button{background:#34445e;color:white;font-weight:bold;cursor:pointer;margin:4px}
+button:disabled{opacity:.4}
+.primary{background:#e53e3e}
+.green{background:#16845d}
+.yellow{background:#927019}
+input{background:#0b1220;color:white;max-width:100%}
+.hidden{display:none}
+.code{font-size:44px;color:#ffcc40;font-weight:bold;letter-spacing:8px}
+.timer{font-family:monospace;font-size:clamp(48px,10vw,85px);color:#ff4545;text-align:center;margin:20px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:15px}
+video{width:100%;background:black;border-radius:10px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.obstacles{display:flex;gap:8px;flex-wrap:wrap;margin:15px 0}
+.obstacle{padding:12px;background:#46536a;border-radius:7px}
+.complete{background:#16845d}
+.retry{background:#927019}
+.fail{background:#bd3030}
+.muted{color:#a8b5c8}
+@media(max-width:700px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header><h1>NINJA LIVE</h1></header>
+<main>
+
+<section id="setup" class="panel">
+<h2>Competition</h2>
+<button class="primary" id="create">CREATE COMPETITION</button>
+<div id="created" class="hidden">
+<p>Your competition code:</p>
+<div class="code" id="code"></div>
+<p class="muted">Enter this code on your phone.</p>
+</div>
+<hr>
+<h3>Join from phone</h3>
+<div class="row">
+<input id="joinCode" placeholder="6-digit code" maxlength="6">
+<button id="join">JOIN</button>
+</div>
+<p id="message" class="muted"></p>
+</section>
+
+<section id="host" class="hidden">
+<div class="panel">
+<h2>Competition <span id="hostCode"></span></h2>
+<p id="phoneStatus" class="muted">Waiting for phone...</p>
+<div class="grid">
+<div>
+<h3>Athlete</h3>
+<input id="athlete" value="Athlete" style="width:100%">
+<h3>Location / Team</h3>
+<input id="location" placeholder="Location or team" style="width:100%">
+<div class="timer" id="timer">00:00.00</div>
+<div class="row">
+<button class="green" id="start">START</button>
+<button id="stop">STOP</button>
+<button id="clear">CLEAR</button>
+<button class="yellow" id="buzzer">BUZZER</button>
+</div>
+<h3>Obstacles</h3>
+<div class="row">
+<button id="add">+ ADD OBSTACLE</button>
+<button id="undo">UNDO</button>
+</div>
+<div id="obstacles" class="obstacles"></div>
+<div class="row">
+<button class="green" id="complete">COMPLETE</button>
+<button class="yellow" id="retry">RETRY</button>
+<button class="primary" id="fail">FAIL</button>
+</div>
+<button id="save">SAVE RESULT</button>
+<h3>Results</h3>
+<div id="results" class="muted">No results yet.</div>
+</div>
+<div>
+<h3>Live Phone Camera</h3>
+<video id="remoteVideo" autoplay playsinline muted></video>
+<p id="videoStatus" class="muted">Waiting for phone camera...</p>
+</div>
+</div>
+</div>
+</section>
+
+<section id="phone" class="hidden">
+<div class="panel">
+<h2>Phone connected to competition <span id="phoneCode"></span></h2>
+<h3>Camera</h3>
+<video id="localVideo" autoplay playsinline muted></video>
+<div class="row">
+<button class="primary" id="camera">START CAMERA</button>
+<button id="record" disabled>START RECORDING</button>
+</div>
+<p id="cameraStatus" class="muted">Allow camera access when asked.</p>
+</div>
+</section>
+
+</main>
+<script>
+const socket=io();
+const $=id=>document.getElementById(id);
+let role=null,code=null,pc=null,stream=null,recorder=null,chunks=[];
+let hostId=null,phoneId=null;
+let elapsed=0,startAt=0,running=false,clock=null;
+let state={athlete:"Athlete",location:"",time:0,obstacles:[],results:[]};
+let pendingCandidates=[];
+
+function show(id){$(id).classList.remove("hidden")}
+function hide(id){$(id).classList.add("hidden")}
+function timeText(ms){
+ let cs=Math.floor(ms/10)%100;
+ let s=Math.floor(ms/1000)%60;
+ let m=Math.floor(ms/60000);
+ return String(m).padStart(2,"0")+":"+String(s).padStart(2,"0")+"."+String(cs).padStart(2,"0");
+}
+function currentTime(){return running?elapsed+Date.now()-startAt:elapsed}
+function draw(){
+ $("timer").textContent=timeText(state.time);
+ $("obstacles").innerHTML="";
+ state.obstacles.forEach((o,i)=>{
+  let d=document.createElement("div");
+  d.className="obstacle "+o.status;
+  d.textContent="Obstacle "+(i+1);
+  $("obstacles").appendChild(d);
+ });
+ $("results").innerHTML=state.results.length?
+ state.results.map((r,i)=>`<p>${i+1}. ${safe(r.name)} — ${timeText(r.time)}</p>`).join("")
+ :"No results yet.";
+}
+function safe(s){
+ return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function publish(){
+ if(role==="host"){
+  state.athlete=$("athlete").value;
+  state.location=$("location").value;
+  socket.emit("updateCompetition",state);
+ }
+ draw();
+}
+function tick(){
+ state.time=currentTime();
+ $("timer").textContent=timeText(state.time);
+}
+function startClock(){
+ if(running)return;
+ running=true;startAt=Date.now();
+ clock=setInterval(tick,30);
+}
+function stopClock(){
+ if(!running)return;
+ elapsed=currentTime();running=false;clearInterval(clock);
+ state.time=elapsed;publish();
+}
+function clearClock(){
+ running=false;clearInterval(clock);
+ elapsed=0;state.time=0;publish();
+}
+
+$("create").onclick=()=>{
+ socket.emit("createCompetition",r=>{
+  if(!r||!r.ok){$("message").textContent="Couldn't create competition. Refresh and try again.";return}
+  role="host";code=r.code;
+  $("code").textContent=code;
+  $("hostCode").textContent=code;
+  hide("setup");show("host");draw();
+ });
+};
+
+$("join").onclick=()=>{
+ let entered=$("joinCode").value.replace(/\D/g,"");
+ socket.emit("joinCompetition",{code:entered},r=>{
+  if(!r||!r.ok){$("message").textContent=r?.error||"Couldn't join.";return}
+  role="phone";code=entered;hostId=r.hostId;
+  $("phoneCode").textContent=code;
+  hide("setup");show("phone");
+ });
+};
+
+$("start").onclick=()=>{startClock();publish()};
+$("stop").onclick=stopClock;
+$("clear").onclick=()=>{
+ stopClock();clearClock();
+ state.obstacles=[];
+ publish();
+};
+$("buzzer").onclick=()=>{
+ stopClock();
+ $("videoStatus").textContent="BUZZER";
+ publish();
+};
+$("add").onclick=()=>{
+ state.obstacles.push({status:""});
+ publish();
+};
+$("undo").onclick=()=>{
+ state.obstacles.pop();publish();
+};
+function mark(status){
+ if(!state.obstacles.length)state.obstacles.push({status:""});
+ state.obstacles[state.obstacles.length-1].status=status;
+ publish();
+}
+$("complete").onclick=()=>mark("complete");
+$("retry").onclick=()=>mark("retry");
+$("fail").onclick=()=>{mark("fail");stopClock()};
+$("save").onclick=()=>{
+ stopClock();
+ state.results.push({
+  name:$("athlete").value||"Athlete",
+  time:state.time
+ });
+ publish();
+};
+
+socket.on("phoneConnected",id=>{
+ phoneId=id;
+ $("phoneStatus").textContent="Phone connected!";
+ $("videoStatus").textContent="Waiting for camera...";
+ createPeer();
+});
+socket.on("phoneDisconnected",()=>{
+ $("phoneStatus").textContent="Phone disconnected";
+});
+socket.on("competitionEnded",()=>{
+ $("cameraStatus").textContent="Competition ended.";
+});
+
+socket.on("updateCompetition",s=>{
+ if(role==="phone")state=s;
+});
+
+const rtcConfig={
+ iceServers:[{urls:"stun:stun.l.google.com:19302"}]
+};
+
+function createPeer(){
+ if(pc)pc.close();
+ pc=new RTCPeerConnection(rtcConfig);
+ pendingCandidates=[];
+ pc.ontrack=e=>{
+  $("remoteVideo").srcObject=e.streams[0];
+  $("videoStatus").textContent="Phone camera connected!";
+ };
+ pc.onicecandidate=e=>{
+  if(e.candidate)socket.emit("signal",{
+   target:phoneId,
+   data:{candidate:e.candidate}
+  });
+ };
+}
+
+socket.on("signal",async({from,data})=>{
+ try{
+  if(role==="host"){
+   if(data.offer){
+    await pc.setRemoteDescription(data.offer);
+    for(const c of pendingCandidates)await pc.addIceCandidate(c);
+    pendingCandidates=[];
+    const answer=await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    socket.emit("signal",{target:from,data:{answer:pc.localDescription}});
+   }
+   if(data.candidate){
+    if(pc.remoteDescription)await pc.addIceCandidate(data.candidate);
+    else pendingCandidates.push(data.candidate);
+   }
+  }else if(role==="phone"){
+   if(data.answer){
+    await pc.setRemoteDescription(data.answer);
+    for(const c of pendingCandidates)await pc.addIceCandidate(c);
+    pendingCandidates=[];
+   }
+   if(data.candidate){
+    if(pc.remoteDescription)await pc.addIceCandidate(data.candidate);
+    else pendingCandidates.push(data.candidate);
+   }
+  }
+ }catch(err){console.error(err)}
+});
+
+$("camera").onclick=async()=>{
+ try{
+  stream=await navigator.mediaDevices.getUserMedia({
+   video:{facingMode:"environment"},
+   audio:true
+  });
+  $("localVideo").srcObject=stream;
+  $("cameraStatus").textContent="Camera started. Connecting to computer...";
+  if(!pc){
+   pc=new RTCPeerConnection(rtcConfig);
+   pendingCandidates=[];
+   pc.onicecandidate=e=>{
+    if(e.candidate)socket.emit("signal",{
+     target:hostId,data:{candidate:e.candidate}
+    });
+   };
+  }
+  stream.getTracks().forEach(track=>pc.addTrack(track,stream));
+  const offer=await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  socket.emit("signal",{target:hostId,data:{offer:pc.localDescription}});
+  $("record").disabled=false;
+ }catch(err){
+  $("cameraStatus").textContent="Camera error: "+err.message+
+  ". Open the HTTPS website and allow camera access.";
+ }
+};
+
+$("record").onclick=()=>{
+ if(!recorder||recorder.state==="inactive"){
+  chunks=[];
+  recorder=new MediaRecorder(stream);
+  recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
+  recorder.onstop=()=>{
+   const blob=new Blob(chunks,{type:"video/webm"});
+   const url=URL.createObjectURL(blob);
+   const a=document.createElement("a");
+   a.href=url;a.download="ninja-live-recording.webm";a.click();
+   URL.revokeObjectURL(url);
+  };
+  recorder.start();
+  $("record").textContent="STOP & SAVE";
+ }else{
+  recorder.stop();
+  $("record").textContent="START RECORDING";
+ }
+};
+</script>
+</body>
+</html>
