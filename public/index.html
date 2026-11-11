@@ -31,7 +31,16 @@ video{width:100%;background:#000;border-radius:10px}.row{display:flex;gap:8px;fl
 
 <section id="host" class="hidden"><div class="panel">
 <h2>Competition <span id="hostCode"></span></h2><p id="phoneStatus" class="muted">Waiting for phone...</p>
-<div class="grid"><div>
+<div class="panel">
+<h3>Competition setup</h3>
+<div class="row"><label>Number of obstacles <input id="courseCount" type="number" min="1" max="50" value="10" style="width:100px"></label><button id="applyCourse" class="green">SET COURSE</button></div>
+<p class="small">Set the course before the first run. Each competitor will be scored on this same number of obstacles.</p>
+<div class="row"><input id="newCompetitor" placeholder="Competitor name"><button id="addCompetitor" class="green">ADD COMPETITOR</button></div>
+<div id="competitorOrder" class="obstacles"></div>
+<p class="small">Use the arrows to change the running order. Add everyone before starting.</p>
+</div>
+<div class="row"><button id="runTabButton" class="primary">RUN</button><button id="resultsTabButton">LEADERBOARD / RESULTS</button></div>
+<div class="grid" id="runTab"><div>
 <h3>Athlete</h3><input id="athlete" value="Athlete" style="width:100%">
 <h3>Age</h3><input id="age" placeholder="Age" inputmode="numeric" style="width:100%">
 <h3>Location / Team</h3><input id="location" placeholder="Location or team" style="width:100%">
@@ -40,8 +49,9 @@ video{width:100%;background:#000;border-radius:10px}.row{display:flex;gap:8px;fl
 <h3>Obstacles</h3><div class="row"><button id="add">+ ADD OBSTACLE</button><button id="undo">UNDO</button></div>
 <div id="obstacles" class="obstacles"></div>
 <div class="row"><button class="green" id="complete">COMPLETE</button><button class="yellow" id="retry">RETRY</button><button class="primary" id="fail">FAIL</button></div>
-<button id="save">SAVE RESULT</button><h3>Results</h3><div id="results" class="muted">No results yet.</div>
+<button id="save">SAVE RESULT</button><div class="row"><button id="nextCompetitor" class="yellow">NEXT COMPETITOR</button></div>
 </div><div><h3>Live Broadcast Video</h3><video id="remoteVideo" autoplay playsinline muted></video><p id="videoStatus" class="muted">Waiting for phone camera...</p></div></div>
+<div id="resultsTab" class="panel hidden"><h2>Leaderboard / Results</h2><div id="results" class="muted">No results yet.</div></div>
 </div></section>
 
 <section id="phone" class="hidden"><div class="panel">
@@ -58,16 +68,21 @@ const socket=io(),$=id=>document.getElementById(id);
 let role=null,code=null,pc=null,stream=null,recorder=null,chunks=[],hostId=null,phoneId=null;
 let elapsed=0,startAt=0,running=false,clock=null,pendingCandidates=[];
 let canvasStream=null,drawLoop=null;
-let state={athlete:"Athlete",age:"",location:"",time:0,obstacles:[],results:[],running:false};
+let state={athlete:"Athlete",age:"",location:"",time:0,obstacles:[],results:[],running:false,obstacleCount:10,competitors:[],currentIndex:0,currentObstacleIndex:0};
 function show(id){$(id).classList.remove("hidden")}function hide(id){$(id).classList.add("hidden")}
 function timeText(ms){ms=Math.max(0,ms||0);let cs=Math.floor(ms/10)%100,s=Math.floor(ms/1000)%60,m=Math.floor(ms/60000);return String(m).padStart(2,"0")+":"+String(s).padStart(2,"0")+"."+String(cs).padStart(2,"0")}
 function currentTime(){return running?elapsed+Date.now()-startAt:elapsed}
 function safe(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function draw(){
  $("timer").textContent=timeText(state.time);$("obstacles").innerHTML="";
- (state.obstacles||[]).forEach((o,i)=>{let d=document.createElement("div");d.className="obstacle "+o.status;d.textContent="Obstacle "+(i+1)+" · "+(o.status||"Not attempted");$("obstacles").appendChild(d)});
- $("results").innerHTML=(state.results||[]).length?state.results.map((r,i)=>`<p>${i+1}. ${safe(r.name)} — ${timeText(r.time)}</p>`).join(""):"No results yet.";
+ (state.obstacles||[]).forEach((o,i)=>{let d=document.createElement("div");d.className="obstacle "+(o.status||"");d.textContent="Obstacle "+(i+1)+" · "+(o.status||"Not attempted");$("obstacles").appendChild(d)});
+ const order=$("competitorOrder");
+ if(order){order.innerHTML="";(state.competitors||[]).forEach((name,i)=>{let d=document.createElement("div");d.className="obstacle";d.textContent=(i+1)+". "+name;let up=document.createElement("button");up.textContent="↑";up.disabled=i===0;up.onclick=()=>moveCompetitor(i,-1);let down=document.createElement("button");down.textContent="↓";down.disabled=i===state.competitors.length-1;down.onclick=()=>moveCompetitor(i,1);d.append(" ",up,down);order.appendChild(d)})}
+ const sorted=[...(state.results||[])].sort((a,b)=>(b.clears||0)-(a.clears||0)||(a.time||0)-(b.time||0));
+ $("results").innerHTML=sorted.length?'<table style="width:100%;border-collapse:collapse"><tr><th align="left">Rank</th><th align="left">Competitor</th><th>Clears</th><th>Time</th></tr>'+sorted.map((r,i)=>'<tr><td>'+(i+1)+'</td><td>'+safe(r.name)+'</td><td align="center">'+(r.clears||0)+' / '+(r.total||state.obstacleCount)+'</td><td align="center">'+timeText(r.time)+'</td></tr>').join("")+'</table>':"No results yet.";
+ if(role==="host"){const current=(state.competitors||[])[state.currentIndex];if(current&&$("athlete").value!==current)$("athlete").value=current;}
 }
+function moveCompetitor(i,delta){const j=i+delta;if(j<0||j>=state.competitors.length)return;[state.competitors[i],state.competitors[j]]=[state.competitors[j],state.competitors[i]];if(j===state.currentIndex)state.currentIndex=i;else if(i===state.currentIndex)state.currentIndex=j;publish();}
 function publish(){
  if(role==="host"){state.athlete=$("athlete").value;state.age=$("age").value;state.location=$("location").value;state.running=running;state.time=currentTime();socket.emit("updateCompetition",state)}
  draw();
@@ -81,7 +96,9 @@ function stopClock(){if(!running)return;elapsed=currentTime();running=false;clea
 function clearClock(){running=false;clearInterval(clock);elapsed=0;state.time=0;state.running=false;publish()}
 $("create").onclick=()=>socket.emit("createCompetition",r=>{
  if(!r||!r.ok){$("message").textContent="Couldn't create competition. Refresh and try again.";return}
- role="host";code=r.code;$("code").textContent=code;$("hostCode").textContent=code;hide("setup");show("host");draw();
+ role="host";code=r.code;$("code").textContent=code;$("hostCode").textContent=code;hide("setup");show("host");
+ state={athlete:"Athlete",age:"",location:"",time:0,obstacles:Array.from({length:10},()=>({status:""})),results:[],running:false,obstacleCount:10,competitors:[],currentIndex:0,currentObstacleIndex:0};
+ draw();
 });
 $("join").onclick=()=>{let entered=$("joinCode").value.replace(/\D/g,"");socket.emit("joinCompetition",{code:entered},r=>{
  if(!r||!r.ok){$("message").textContent=r?.error||"Couldn't join.";return}
@@ -90,11 +107,16 @@ $("join").onclick=()=>{let entered=$("joinCode").value.replace(/\D/g,"");socket.
 $("start").onclick=()=>{startClock();publish()};$("stop").onclick=stopClock;
 $("clear").onclick=()=>{stopClock();clearClock();state.obstacles=[];publish()};
 $("buzzer").onclick=()=>{stopClock();$("videoStatus").textContent="BUZZER";publish()};
-$("add").onclick=()=>{state.obstacles.push({status:""});publish()};
-$("undo").onclick=()=>{state.obstacles.pop();publish()};
-function mark(status){if(!state.obstacles.length)state.obstacles.push({status:""});state.obstacles[state.obstacles.length-1].status=status;publish()}
+$("add").onclick=()=>{if(state.obstacles.length<state.obstacleCount)state.obstacles.push({status:""});publish()};
+$("undo").onclick=()=>{if(state.obstacles.length>0)state.obstacles.pop();publish()};
+function mark(status){const i=state.currentObstacleIndex||0;if(i>=state.obstacleCount)return;state.obstacles[i]={status};if(status==="complete")state.currentObstacleIndex=Math.min(i+1,state.obstacleCount);publish()}
 $("complete").onclick=()=>mark("complete");$("retry").onclick=()=>mark("retry");$("fail").onclick=()=>{mark("fail");stopClock()};
-$("save").onclick=()=>{stopClock();state.results.push({name:$("athlete").value||"Athlete",time:state.time,obstacles:state.obstacles.filter(o=>o.status==="complete").length});publish()};
+$("applyCourse").onclick=()=>{const n=Math.max(1,Math.min(50,Number($("courseCount").value)||10));if((state.results||[]).length&&!confirm("Changing the course will reset the current run but keep saved results. Continue?"))return;state.obstacleCount=n;state.obstacles=Array.from({length:n},()=>({status:""}));state.currentObstacleIndex=0;publish()};
+$("addCompetitor").onclick=()=>{const name=$("newCompetitor").value.trim();if(!name)return;if(state.competitors.includes(name)){alert("That competitor is already on the list.");return}state.competitors.push(name);$("newCompetitor").value="";if(state.competitors.length===1){state.currentIndex=0;$("athlete").value=name}publish()};
+$("nextCompetitor").onclick=()=>{stopClock();if(!state.competitors.length){alert("Add competitors in Competition setup first.");return}state.currentIndex=(state.currentIndex+1)%state.competitors.length;$("athlete").value=state.competitors[state.currentIndex];elapsed=0;state.time=0;state.currentObstacleIndex=0;state.obstacles=Array.from({length:state.obstacleCount},()=>({status:""}));publish()};
+$("save").onclick=()=>{stopClock();const name=$("athlete").value||"Athlete";const clears=state.obstacles.filter(o=>o.status==="complete").length;state.results=state.results.filter(r=>r.name!==name);state.results.push({name,time:state.time,clears,total:state.obstacleCount,obstacles:[...state.obstacles]});publish()};
+$("runTabButton").onclick=()=>{show("runTab");hide("resultsTab");$("runTabButton").classList.add("primary");$("resultsTabButton").classList.remove("primary")};
+$("resultsTabButton").onclick=()=>{hide("runTab");show("resultsTab");$("resultsTabButton").classList.add("primary");$("runTabButton").classList.remove("primary")};
 socket.on("phoneConnected",id=>{phoneId=id;$("phoneStatus").textContent="Phone connected!";$("videoStatus").textContent="Waiting for camera...";createPeer()});
 socket.on("phoneDisconnected",()=>$("phoneStatus").textContent="Phone disconnected");
 socket.on("competitionEnded",()=>$("cameraStatus").textContent="Competition ended.");
