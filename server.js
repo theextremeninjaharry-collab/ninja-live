@@ -38,24 +38,19 @@ io.on("connection", socket => {
     socket.data.code = code;
     socket.data.role = "host";
 
-    callback({ ok: true, code });
+    callback?.({ ok: true, code });
   });
 
   socket.on("joinCompetition", ({ code }, callback) => {
-    const room = competitions.get(String(code));
+    code = String(code || "").replace(/\D/g, "").slice(0, 6);
+    const room = competitions.get(code);
 
     if (!room) {
-      return callback({
-        ok: false,
-        error: "Competition code not found."
-      });
+      return callback?.({ ok: false, error: "Competition not found." });
     }
 
     if (room.phone) {
-      return callback({
-        ok: false,
-        error: "A phone is already connected."
-      });
+      return callback?.({ ok: false, error: "A phone is already connected." });
     }
 
     room.phone = socket.id;
@@ -63,9 +58,13 @@ io.on("connection", socket => {
     socket.data.code = code;
     socket.data.role = "phone";
 
-    callback({ ok: true, state: room.state });
+    callback?.({
+      ok: true,
+      state: room.state,
+      hostId: room.host
+    });
 
-    io.to(room.host).emit("phoneConnected");
+    io.to(room.host).emit("phoneConnected", socket.id);
   });
 
   socket.on("updateCompetition", state => {
@@ -75,6 +74,23 @@ io.on("connection", socket => {
 
     room.state = state;
     socket.to(socket.data.code).emit("updateCompetition", state);
+  });
+
+  // Relay WebRTC camera connection messages
+  socket.on("signal", ({ target, data }) => {
+    const room = competitions.get(socket.data.code);
+
+    if (!room) return;
+
+    const participants = [room.host, room.phone];
+
+    if (!participants.includes(socket.id)) return;
+    if (!participants.includes(target)) return;
+
+    io.to(target).emit("signal", {
+      from: socket.id,
+      data
+    });
   });
 
   socket.on("disconnect", () => {
@@ -96,5 +112,5 @@ io.on("connection", socket => {
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log("Ninja Live is running on port " + PORT);
+  console.log("Ninja Live running on port " + PORT);
 });
