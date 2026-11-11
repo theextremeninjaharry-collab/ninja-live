@@ -46,7 +46,7 @@ video{width:100%;background:#000;border-radius:10px}.row{display:flex;gap:8px;fl
 <h3>Age</h3><input id="age" placeholder="Age" inputmode="numeric" style="width:100%">
 <h3>Location / Team</h3><input id="location" placeholder="Location or team" style="width:100%">
 <div class="timer" id="timer">00:00.00</div>
-<div class="row"><button class="green" id="start">START</button><button id="stop">STOP</button><button id="clear">CLEAR</button><button class="yellow" id="buzzer">BUZZER</button></div>
+<div class="row"><button class="green" id="start">START</button><button id="stop">STOP</button><button id="clear">CLEAR</button><button class="yellow" id="buzzer">BUZZER</button><button id="soundToggle" class="green">SOUND: ON</button></div>
 <h3>Obstacles</h3><div class="row"><button id="add">+ ADD OBSTACLE</button><button id="undo">UNDO</button></div>
 <div id="obstacles" class="obstacles"></div>
 <div class="row"><button class="green" id="complete">COMPLETE</button><button class="yellow" id="retry">RETRY</button><button class="primary" id="fail">FAIL</button></div>
@@ -74,11 +74,18 @@ function showHistory(){const list=$("historyList"),items=getCompetitionHistory()
  items.forEach((item,index)=>{const card=document.createElement("div");card.className="panel";const heading=document.createElement("h3");heading.textContent=item.name||"Competition "+(index+1);const date=document.createElement("p");date.className="small";date.textContent=new Date(item.savedAt).toLocaleString()+" · "+(item.competitors||[]).length+" competitors · "+(item.results||[]).length+" results";const view=document.createElement("button");view.textContent="VIEW RESULTS";view.onclick=()=>{const detail=card.querySelector(".historyDetails");detail.classList.toggle("hidden");};const detail=document.createElement("div");detail.className="historyDetails hidden";const groups={};(item.results||[]).forEach(r=>{const g=r.ageGroup||"Unassigned";(groups[g]??=[]).push(r)});Object.keys(groups).sort().forEach(group=>{const title=document.createElement("h4");title.textContent="Age Group: "+group;detail.appendChild(title);const table=document.createElement("div");table.className="small";groups[group].sort((a,b)=>(b.clears||0)-(a.clears||0)||(a.time||0)-(b.time||0)).forEach((r,i)=>{const p=document.createElement("p");p.textContent=(i+1)+". "+r.name+" · Age "+(r.age||"—")+" · "+(r.clears||0)+"/"+(r.total||item.obstacleCount)+" clears · "+timeText(r.time);table.appendChild(p)});detail.appendChild(table)});card.append(heading,date,view,detail);list.appendChild(card)})}
 
 let role=null,code=null,pc=null,stream=null,recorder=null,chunks=[],hostId=null,phoneId=null;
-let elapsed=0,startAt=0,running=false,clock=null,pendingCandidates=[];
+let elapsed=0,startAt=0,running=false,clock=null,pendingCandidates=[];\nlet audioContext=null,soundEnabled=true,countdownToken=0,countdownActive=false;
 let canvasStream=null,drawLoop=null;
 let state={athlete:"Athlete",age:"",location:"",time:0,obstacles:[],results:[],running:false,obstacleCount:10,competitors:[],currentIndex:0,currentObstacleIndex:0};
 function show(id){$(id).classList.remove("hidden")}function hide(id){$(id).classList.add("hidden")}
 function timeText(ms){ms=Math.max(0,ms||0);let cs=Math.floor(ms/10)%100,s=Math.floor(ms/1000)%60,m=Math.floor(ms/60000);return String(m).padStart(2,"0")+":"+String(s).padStart(2,"0")+"."+String(cs).padStart(2,"0")}
+function getAudioContext(){const AudioCtx=window.AudioContext||window.webkitAudioContext;if(!AudioCtx)return null;if(!audioContext)audioContext=new AudioCtx();if(audioContext.state==="suspended")audioContext.resume();return audioContext}
+function playTone(frequency,duration,options={}){if(!soundEnabled)return Promise.resolve();const ctx=getAudioContext();if(!ctx)return Promise.resolve();const start=ctx.currentTime,osc=ctx.createOscillator(),gain=ctx.createGain();osc.type=options.type||"sine";osc.frequency.setValueAtTime(frequency,start);if(options.endFrequency)osc.frequency.exponentialRampToValueAtTime(Math.max(1,options.endFrequency),start+duration);gain.gain.setValueAtTime(0.0001,start);gain.gain.exponentialRampToValueAtTime(options.volume||0.16,start+0.015);gain.gain.setValueAtTime(options.volume||0.16,Math.max(start+0.02,start+duration-0.04));gain.gain.exponentialRampToValueAtTime(0.0001,start+duration);osc.connect(gain);gain.connect(ctx.destination);osc.start(start);osc.stop(start+duration+0.02);return new Promise(resolve=>setTimeout(resolve,duration*1000))}
+async function playCountdown(){await playTone(660,.16);await new Promise(r=>setTimeout(r,170));await playTone(660,.16);await new Promise(r=>setTimeout(r,170));await playTone(660,.16);await new Promise(r=>setTimeout(r,180));await playTone(880,.72,{volume:.2})}
+function playBuzzerSound(){if(!soundEnabled)return;const ctx=getAudioContext();if(!ctx)return;const start=ctx.currentTime,osc=ctx.createOscillator(),gain=ctx.createGain();osc.type="sawtooth";osc.frequency.setValueAtTime(430,start);gain.gain.setValueAtTime(.0001,start);gain.gain.exponentialRampToValueAtTime(.13,start+.025);gain.gain.setValueAtTime(.13,start+1.15);gain.gain.exponentialRampToValueAtTime(.0001,start+1.25);osc.connect(gain);gain.connect(ctx.destination);osc.start(start);osc.stop(start+1.27)}
+function playFailSound(){if(!soundEnabled)return;playTone(780,.48,{type:"triangle",endFrequency:190,volume:.19})}
+async function playClearSound(){if(!soundEnabled)return;await playTone(740,.11,{type:"square",volume:.11});await playTone(1040,.22,{type:"square",volume:.12})}
+
 function currentTime(){return running?elapsed+Date.now()-startAt:elapsed}
 function safe(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function draw(){
@@ -100,8 +107,8 @@ function sendLiveState(){
  state.running=running;state.time=currentTime();socket.emit("updateCompetition",state);
 }
 function startClock(){if(running)return;running=true;startAt=Date.now();state.running=true;clock=setInterval(()=>{state.time=currentTime();$("timer").textContent=timeText(state.time);sendLiveState()},100)}
-function stopClock(){if(!running)return;elapsed=currentTime();running=false;clearInterval(clock);state.time=elapsed;state.running=false;publish()}
-function clearClock(){running=false;clearInterval(clock);elapsed=0;state.time=0;state.running=false;publish()}
+function stopClock(){countdownToken++;countdownActive=false;if(!running)return;elapsed=currentTime();running=false;clearInterval(clock);state.time=elapsed;state.running=false;publish()}
+function clearClock(){countdownToken++;countdownActive=false;running=false;clearInterval(clock);elapsed=0;state.time=0;state.running=false;publish()}
 $("create").onclick=()=>socket.emit("createCompetition",r=>{
  if(!r||!r.ok){$("message").textContent="Couldn't create competition. Refresh and try again.";return}
  role="host";code=r.code;$("code").textContent=code;$("hostCode").textContent=code;hide("setup");show("host");
@@ -112,13 +119,13 @@ $("join").onclick=()=>{let entered=$("joinCode").value.replace(/\D/g,"");socket.
  if(!r||!r.ok){$("message").textContent=r?.error||"Couldn't join.";return}
  role="phone";code=entered;hostId=r.hostId;state=r.state||state;$("phoneCode").textContent=code;hide("setup");show("phone");draw();
 })};
-$("start").onclick=()=>{startClock();publish()};$("stop").onclick=stopClock;
+$("start").onclick=async()=>{if(running||countdownActive)return;const token=++countdownToken;countdownActive=true;getAudioContext();for(const n of [3,2,1]){if(token!==countdownToken)return;$("timer").textContent=String(n);await playTone(660,.16);await new Promise(r=>setTimeout(r,170))}if(token!==countdownToken)return;$("timer").textContent="GO!";await playTone(880,.72,{volume:.2});if(token!==countdownToken)return;countdownActive=false;startClock();publish()};$("stop").onclick=stopClock;
 $("clear").onclick=()=>{stopClock();clearClock();state.obstacles=[];publish()};
-$("buzzer").onclick=()=>{stopClock();$("videoStatus").textContent="BUZZER";publish()};
+$("buzzer").onclick=()=>{stopClock();playBuzzerSound();$("videoStatus").textContent="BUZZER";publish()};\n$("soundToggle").onclick=()=>{soundEnabled=!soundEnabled;$("soundToggle").textContent="SOUND: "+(soundEnabled?"ON":"OFF");$("soundToggle").classList.toggle("green",soundEnabled);if(soundEnabled)getAudioContext()};
 $("add").onclick=()=>{if(state.obstacles.length<state.obstacleCount)state.obstacles.push({status:""});publish()};
 $("undo").onclick=()=>{if(state.obstacles.length>0)state.obstacles.pop();publish()};
 function mark(status){const i=state.currentObstacleIndex||0;if(i>=state.obstacleCount)return;state.obstacles[i]={status};if(status==="complete")state.currentObstacleIndex=Math.min(i+1,state.obstacleCount);publish()}
-$("complete").onclick=()=>mark("complete");$("retry").onclick=()=>mark("retry");$("fail").onclick=()=>{mark("fail");stopClock()};
+$("complete").onclick=()=>{mark("complete");playClearSound()};$("retry").onclick=()=>mark("retry");$("fail").onclick=()=>{mark("fail");playFailSound();stopClock()};
 $("applyCourse").onclick=()=>{const n=Math.max(1,Math.min(50,Number($("courseCount").value)||10));if((state.results||[]).length&&!confirm("Changing the course will reset the current run but keep saved results. Continue?"))return;state.obstacleCount=n;state.obstacles=Array.from({length:n},()=>({status:""}));state.currentObstacleIndex=0;publish()};
 $("addCompetitor").onclick=()=>{const name=$("newCompetitor").value.trim(),age=$("newAge").value.trim(),ageGroup=$("newAgeGroup").value.trim(),location=$("newLocation").value.trim();if(!name){alert("Enter a competitor name.");return}if(!ageGroup){alert("Enter an age group, such as 13-14.");return}if(state.competitors.some(c=>c.name.toLowerCase()===name.toLowerCase())){alert("That competitor is already on the list.");return}const competitor={name,age,ageGroup,location};state.competitors.push(competitor);$("newCompetitor").value="";$("newAge").value="";$("newAgeGroup").value="";$("newLocation").value="";if(state.competitors.length===1){state.currentIndex=0;$("athlete").value=name;$("age").value=age;$("location").value=location}publish()};
 $("nextCompetitor").onclick=()=>{stopClock();if(!state.competitors.length){alert("Add competitors in Competition setup first.");return}state.currentIndex=(state.currentIndex+1)%state.competitors.length;const next=state.competitors[state.currentIndex];$("athlete").value=next.name;$("age").value=next.age||"";$("location").value=next.location||"";elapsed=0;state.time=0;state.currentObstacleIndex=0;state.obstacles=Array.from({length:state.obstacleCount},()=>({status:""}));publish()};
