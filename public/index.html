@@ -164,7 +164,7 @@ function drawBroadcast(){
  const sorted=[...(state.results||[])].sort((a,b)=>(a.time||0)-(b.time||0)),count=Math.max(1,Math.min(3,sorted.length)),slotW=w/count;
  for(let i=0;i<count;i++){const r=sorted[i],x=i*slotW;if(i){ctx.fillStyle="#0874bb";ctx.fillRect(x,h-105,3,105)}
   ctx.textAlign="left";ctx.fillStyle="#fff";ctx.font="bold 25px Arial";ctx.fillText((i+1)+". "+(r?String(r.name).slice(0,22):"WAITING FOR RESULTS"),x+18,h-67);
-  ctx.fillStyle="#42d36b";ctx.font="bold 19px Arial";ctx.fillText(r?(r.obstacles??0)+" POINTS":"",x+18,h-35);
+  ctx.fillStyle="#42d36b";ctx.font="bold 19px Arial";ctx.fillText(r?(r.clears??0)+" CLEARS":"",x+18,h-35);
   ctx.textAlign="right";ctx.fillStyle="#fff";ctx.font="bold 25px monospace";ctx.fillText(r?timeText(r.time):"",x+slotW-18,h-48);
  }
 }
