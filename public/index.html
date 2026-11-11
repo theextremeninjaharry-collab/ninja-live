@@ -74,7 +74,8 @@ function showHistory(){const list=$("historyList"),items=getCompetitionHistory()
  items.forEach((item,index)=>{const card=document.createElement("div");card.className="panel";const heading=document.createElement("h3");heading.textContent=item.name||"Competition "+(index+1);const date=document.createElement("p");date.className="small";date.textContent=new Date(item.savedAt).toLocaleString()+" · "+(item.competitors||[]).length+" competitors · "+(item.results||[]).length+" results";const view=document.createElement("button");view.textContent="VIEW RESULTS";view.onclick=()=>{const detail=card.querySelector(".historyDetails");detail.classList.toggle("hidden");};const detail=document.createElement("div");detail.className="historyDetails hidden";const groups={};(item.results||[]).forEach(r=>{const g=r.ageGroup||"Unassigned";(groups[g]??=[]).push(r)});Object.keys(groups).sort().forEach(group=>{const title=document.createElement("h4");title.textContent="Age Group: "+group;detail.appendChild(title);const table=document.createElement("div");table.className="small";groups[group].sort((a,b)=>(b.clears||0)-(a.clears||0)||(a.time||0)-(b.time||0)).forEach((r,i)=>{const p=document.createElement("p");p.textContent=(i+1)+". "+r.name+" · Age "+(r.age||"—")+" · "+(r.clears||0)+"/"+(r.total||item.obstacleCount)+" clears · "+timeText(r.time);table.appendChild(p)});detail.appendChild(table)});card.append(heading,date,view,detail);list.appendChild(card)})}
 
 let role=null,code=null,pc=null,stream=null,recorder=null,chunks=[],hostId=null,phoneId=null;
-let elapsed=0,startAt=0,running=false,clock=null,pendingCandidates=[];\nlet audioContext=null,soundEnabled=true,countdownToken=0,countdownActive=false;
+let elapsed=0,startAt=0,running=false,clock=null,pendingCandidates=[];
+let audioContext=null,soundEnabled=true,countdownToken=0,countdownActive=false;
 let canvasStream=null,drawLoop=null;
 let state={athlete:"Athlete",age:"",location:"",time:0,obstacles:[],results:[],running:false,obstacleCount:10,competitors:[],currentIndex:0,currentObstacleIndex:0};
 function show(id){$(id).classList.remove("hidden")}function hide(id){$(id).classList.add("hidden")}
@@ -121,7 +122,8 @@ $("join").onclick=()=>{let entered=$("joinCode").value.replace(/\D/g,"");socket.
 })};
 $("start").onclick=async()=>{if(running||countdownActive)return;const token=++countdownToken;countdownActive=true;getAudioContext();for(const n of [3,2,1]){if(token!==countdownToken)return;$("timer").textContent=String(n);await playTone(660,.16);await new Promise(r=>setTimeout(r,170))}if(token!==countdownToken)return;$("timer").textContent="GO!";await playTone(880,.72,{volume:.2});if(token!==countdownToken)return;countdownActive=false;startClock();publish()};$("stop").onclick=stopClock;
 $("clear").onclick=()=>{stopClock();clearClock();state.obstacles=[];publish()};
-$("buzzer").onclick=()=>{stopClock();playBuzzerSound();$("videoStatus").textContent="BUZZER";publish()};\n$("soundToggle").onclick=()=>{soundEnabled=!soundEnabled;$("soundToggle").textContent="SOUND: "+(soundEnabled?"ON":"OFF");$("soundToggle").classList.toggle("green",soundEnabled);if(soundEnabled)getAudioContext()};
+$("buzzer").onclick=()=>{stopClock();playBuzzerSound();$("videoStatus").textContent="BUZZER";publish()};
+$("soundToggle").onclick=()=>{soundEnabled=!soundEnabled;$("soundToggle").textContent="SOUND: "+(soundEnabled?"ON":"OFF");$("soundToggle").classList.toggle("green",soundEnabled);if(soundEnabled)getAudioContext()};
 $("add").onclick=()=>{if(state.obstacles.length<state.obstacleCount)state.obstacles.push({status:""});publish()};
 $("undo").onclick=()=>{if(state.obstacles.length>0)state.obstacles.pop();publish()};
 function mark(status){const i=state.currentObstacleIndex||0;if(i>=state.obstacleCount)return;state.obstacles[i]={status};if(status==="complete")state.currentObstacleIndex=Math.min(i+1,state.obstacleCount);publish()}
